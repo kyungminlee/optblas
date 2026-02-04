@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <ctype.h>
 #include <math.h>
+#include <string.h>
 
 // -----------------------------------------------------------------------------
 // Constants and Macros
@@ -318,16 +319,15 @@ void my_dtrsm(char side, char uplo, char transa, char diag, int m, int n,
               long src_idx = lside ? (long)k : (long)k * ldb;
               long dst_idx = lside ? (long)i : (long)i * ldb;
 
-#pragma omp task depend(in : B[src_idx]) depend(inout : B[dst_idx])            \
-    firstprivate(i, k, blk_size, i_size)
+#pragma omp task depend(in : B[src_idx]) depend(inout : B[dst_idx]) firstprivate(i, k, blk_size, i_size)
               {
                 if (lside) {
                   const double *A_ptr = trans ? &A[k + i * lda] : &A[i + k * lda];
-                  my_dgemm(trans ? transa : 'N', 'N', i_size, n, blk_size, -1.0,
+                  my_dgemm(transa, 'N', i_size, n, blk_size, -1.0,
                            A_ptr, lda, &B[k], ldb, 1.0, &B[i], ldb);
                 } else {
                   const double *A_ptr = trans ? &A[i + k * lda] : &A[k + i * lda];
-                  my_dgemm('N', trans ? transa : 'N', m, i_size, blk_size, -1.0,
+                  my_dgemm('N', transa, m, i_size, blk_size, -1.0,
                            &B[k * ldb], ldb, A_ptr, lda, 1.0, &B[i * ldb], ldb);
                 }
               }
@@ -342,8 +342,109 @@ void my_dtrsm(char side, char uplo, char transa, char diag, int m, int n,
   }
 }
 
+
+void my_dtrsm2(char side, char uplo, char transa, char diag, int m, int n,
+              double alpha, const double *A, int lda, double *B, int ldb) {
+  
+  // 1. Sanitize Inputs for dgemm (Case Insensitivity)
+  char opA = (transa == 'T' || transa == 'C' || transa == 't' || transa == 'c') ? 'T' : 'N';
+  
+  // 2. Fast Path
+  if (m <= TRSM_BLK && n <= TRSM_BLK) {
+    dtrsm_ref(side, uplo, transa, diag, m, n, alpha, A, lda, B, ldb);
+    return;
+  }
+
+  // 3. Scale B Upfront (Alpha Handling)
+  // Logic: if alpha != 1, scale everything once, then use alpha=1.0 for blocks
+  if (alpha != 1.0) {
+    for (int j = 0; j < n; ++j) {
+      for (int i = 0; i < m; ++i) {
+        B[i + j * ldb] *= alpha;
+      }
+    }
+    alpha = 1.0;
+  }
+
+  int lside = side == 'L' || side == 'l';
+  int nounit = diag == 'N' || diag == 'n';
+  int lower = uplo == 'L' || uplo == 'l';
+  int trans = transa == 'T' || transa == 't' || transa == 'C' || transa == 'c';
+
+  // Logic: 
+  // Left Side:  Lower NoTrans (Forward), Upper Trans (Forward), else Backward
+  // Right Side: Upper NoTrans (Forward), Lower Trans (Forward), else Backward
+  int logical_lower = (lower && !trans) || (!lower && trans);
+  int forward = lside ? logical_lower : !logical_lower;
+
+  int limit = lside ? m : n;
+
+  // --- Sequential Blocked Loop ---
+  if (forward) {
+    for (int k = 0; k < limit; k += TRSM_BLK) {
+      int blk_size = (k + TRSM_BLK > limit) ? limit - k : TRSM_BLK;
+
+      // 1. Solve Diagonal Block
+      const double *Ak = &A[k + k * lda];
+      double *Bk = lside ? &B[k] : &B[k * ldb]; // B row k or col k
+      
+      if (lside)
+        dtrsm_ref(side, uplo, transa, diag, blk_size, n, alpha, Ak, lda, Bk, ldb);
+      else
+        dtrsm_ref(side, uplo, transa, diag, m, blk_size, alpha, Ak, lda, Bk, ldb);
+
+      // 2. Update Off-Diagonal Blocks (i > k)
+      for (int i = k + blk_size; i < limit; i += TRSM_BLK) {
+        int i_size = (i + TRSM_BLK > limit) ? limit - i : TRSM_BLK;
+        
+        if (lside) {
+          // B[i] = B[i] - A[i,k] * B[k]
+          // A ptr: Row i, Col k. 
+          // If trans, we need A[k,i]^T. A ptr is &A[k + i*lda].
+          const double *A_ptr = trans ? &A[k + i * lda] : &A[i + k * lda];
+          my_dgemm(opA, 'N', i_size, n, blk_size, -1.0, A_ptr, lda, &B[k], ldb, 1.0, &B[i], ldb);
+        } else {
+          // B[i] = B[i] - B[k] * A[k,i]
+          const double *A_ptr = trans ? &A[i + k * lda] : &A[k + i * lda];
+          my_dgemm('N', opA, m, i_size, blk_size, -1.0, &B[k * ldb], ldb, A_ptr, lda, 1.0, &B[i * ldb], ldb);
+        }
+      }
+    }
+  } else {
+    // Backward Loop
+    // To avoid unsigned/signed confusion, iterate explicitly
+    int num_blocks = (limit + TRSM_BLK - 1) / TRSM_BLK;
+    for (int bk_idx = num_blocks - 1; bk_idx >= 0; --bk_idx) {
+      int k = bk_idx * TRSM_BLK;
+      int blk_size = (k + TRSM_BLK > limit) ? limit - k : TRSM_BLK;
+
+      // 1. Solve Diagonal Block
+      const double *Ak = &A[k + k * lda];
+      double *Bk = lside ? &B[k] : &B[k * ldb];
+
+      if (lside)
+        dtrsm_ref(side, uplo, transa, diag, blk_size, n, alpha, Ak, lda, Bk, ldb);
+      else
+        dtrsm_ref(side, uplo, transa, diag, m, blk_size, alpha, Ak, lda, Bk, ldb);
+
+      // 2. Update Previous Blocks (i < k)
+      for (int i = 0; i < k; i += TRSM_BLK) {
+        int i_size = (i + TRSM_BLK > k) ? k - i : TRSM_BLK; // Should be TRSM_BLK except maybe extremely small limits, but good safety.
+        
+        if (lside) {
+          const double *A_ptr = trans ? &A[k + i * lda] : &A[i + k * lda];
+          my_dgemm(opA, 'N', i_size, n, blk_size, -1.0, A_ptr, lda, &B[k], ldb, 1.0, &B[i], ldb);
+        } else {
+          const double *A_ptr = trans ? &A[i + k * lda] : &A[k + i * lda];
+          my_dgemm('N', opA, m, i_size, blk_size, -1.0, &B[k * ldb], ldb, A_ptr, lda, 1.0, &B[i * ldb], ldb);
+        }
+      }
+    }
+  }
+}
+
 void dtrsm_(char const *side, char const *uplo, char const *transa, char const *diag, int const *m, int const *n,
             double const *alpha, const double *restrict A, int const *lda, double *restrict B, int const *ldb) {
-  my_dtrsm(*side, *uplo, *transa, *diag, *m, *n, *alpha, A, *lda, B, *ldb);
+  my_dtrsm2(*side, *uplo, *transa, *diag, *m, *n, *alpha, A, *lda, B, *ldb);
   // dtrsm_ref(*side, *uplo, *transa, *diag, *m, *n, *alpha, A, *lda, B, *ldb);
 }
