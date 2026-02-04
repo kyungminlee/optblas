@@ -7,11 +7,12 @@
 #include <omp.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <ctype.h>
+#include <math.h>
 
 // -----------------------------------------------------------------------------
 // Constants and Macros
 // -----------------------------------------------------------------------------
-
 
 #define TRSM_BLK 128
 
@@ -19,113 +20,185 @@ void my_dgemm(char transa, char transb, int m, int n, int k, double alpha,
               const double *A, int lda, const double *B, int ldb, double beta,
               double *C, int ldc);
 
-
 // -----------------------------------------------------------------------------
 // DTRSM Implementation
 // -----------------------------------------------------------------------------
 
-// Helper: Small serial TRSM for diagonal blocks
-void dtrsm_small(char side, char uplo, char transa, char diag, int m, int n,
-                 double alpha, const double *A, int lda, double *B, int ldb) {
-  // Scaling B by alpha first
-  if (alpha != 1.0) {
-    for (int j = 0; j < n; ++j)
-      for (int i = 0; i < m; ++i)
-        B[i + j * ldb] *= alpha;
+// Helper: Reference DTRSM implementation (converted from dtrsm.f)
+void dtrsm_ref(char side, char uplo, char transa, char diag, int m, int n,
+               double alpha, const double *A, int lda, double *B, int ldb) {
+  int i, j, k;
+  int lside = side == 'L' || side == 'l';
+  int nounit = diag == 'N' || diag == 'n';
+  int upper = uplo == 'U' || uplo == 'u';
+  int trans = transa == 'T' || transa == 't' || transa == 'C' || transa == 'c';
+  if (m == 0 || n == 0)
+    return;
+
+  if (alpha == 0.0) {
+    for (j = 0; j < n; ++j) {
+      for (i = 0; i < m; ++i) {
+        B[i + j * ldb] = 0.0;
+      }
+    }
+    return;
   }
 
-  int lside = (side == 'L' || side == 'l');
-  int lower = (uplo == 'L' || uplo == 'l');
-  int unit = (diag == 'U' || diag == 'u');
-  int trans =
-      (transa == 'T' || transa == 't' || transa == 'C' || transa == 'c');
-
   if (lside) {
-    // Left Side: op(A) * X = B
-    for (int j = 0; j < n; ++j) {
-      if (!trans) {
-        if (lower) {
-          // Forward substitution
-          for (int i = 0; i < m; ++i) {
-            for (int k = 0; k < i; ++k) {
-              B[i + j * ldb] -= A[i + k * lda] * B[k + j * ldb];
-            }
-            if (!unit)
-              B[i + j * ldb] /= A[i + i * lda];
+    if (!trans) {
+      // SIDE = 'L', TRANSA = 'N'
+      if (upper) {
+        // UPLO = 'U'
+        for (j = 0; j < n; ++j) {
+          if (alpha != 1.0) {
+            for (i = 0; i < m; ++i)
+              B[i + j * ldb] *= alpha;
           }
-        } else { // Upper
-          // Backward substitution
-          for (int i = m - 1; i >= 0; --i) {
-            for (int k = i + 1; k < m; ++k) {
-              B[i + j * ldb] -= A[i + k * lda] * B[k + j * ldb];
+          for (k = m - 1; k >= 0; --k) {
+            if (B[k + j * ldb] != 0.0) {
+              if (nounit)
+                B[k + j * ldb] /= A[k + k * lda];
+              for (i = 0; i < k; ++i) {
+                B[i + j * ldb] -= B[k + j * ldb] * A[i + k * lda];
+              }
             }
-            if (!unit)
-              B[i + j * ldb] /= A[i + i * lda];
           }
         }
-      } else {       // Transposed
-        if (lower) { // Lower Transposed -> effectively Upper
-          // Backward
-          for (int i = m - 1; i >= 0; --i) {
-            for (int k = i + 1; k < m; ++k) {
-              B[i + j * ldb] -= A[k + i * lda] * B[k + j * ldb];
-            }
-            if (!unit)
-              B[i + j * ldb] /= A[i + i * lda];
+      } else {
+        // UPLO = 'L'
+        for (j = 0; j < n; ++j) {
+          if (alpha != 1.0) {
+            for (i = 0; i < m; ++i)
+              B[i + j * ldb] *= alpha;
           }
-        } else { // Upper Transposed -> effectively Lower
-          // Forward
-          for (int i = 0; i < m; ++i) {
-            for (int k = 0; k < i; ++k) {
-              B[i + j * ldb] -= A[k + i * lda] * B[k + j * ldb];
+          for (k = 0; k < m; ++k) {
+            if (B[k + j * ldb] != 0.0) {
+              if (nounit)
+                B[k + j * ldb] /= A[k + k * lda];
+              for (i = k + 1; i < m; ++i) {
+                B[i + j * ldb] -= B[k + j * ldb] * A[i + k * lda];
+              }
             }
-            if (!unit)
-              B[i + j * ldb] /= A[i + i * lda];
+          }
+        }
+      }
+    } else {
+      // SIDE = 'L', TRANSA = 'T'
+      if (upper) {
+        // UPLO = 'U'
+        for (j = 0; j < n; ++j) {
+          for (i = 0; i < m; ++i) {
+            double temp = alpha * B[i + j * ldb];
+            for (k = 0; k < i; ++k) {
+              temp -= A[k + i * lda] * B[k + j * ldb];
+            }
+            if (nounit)
+              temp /= A[i + i * lda];
+            B[i + j * ldb] = temp;
+          }
+        }
+      } else {
+        // UPLO = 'L'
+        for (j = 0; j < n; ++j) {
+          for (i = m - 1; i >= 0; --i) {
+            double temp = alpha * B[i + j * ldb];
+            for (k = i + 1; k < m; ++k) {
+              temp -= A[k + i * lda] * B[k + j * ldb];
+            }
+            if (nounit)
+              temp /= A[i + i * lda];
+            B[i + j * ldb] = temp;
           }
         }
       }
     }
   } else {
-    // Right Side: X * op(A) = B
-    for (int i = 0; i < m; ++i) {
-      if (!trans) {
-        if (lower) {
-          // Backward substitution (L^T is Upper)
-          for (int k = n - 1; k >= 0; --k) {
-            for (int j = k + 1; j < n; ++j) {
-              B[i + k * ldb] -= B[i + j * ldb] * A[k + j * lda];
-            }
-            if (!unit)
-              B[i + k * ldb] /= A[k + k * lda];
+    // SIDE = 'R'
+    if (!trans) {
+      // SIDE = 'R', TRANSA = 'N'
+      if (upper) {
+        // UPLO = 'U'
+        for (j = 0; j < n; ++j) {
+          if (alpha != 1.0) {
+            for (i = 0; i < m; ++i)
+              B[i + j * ldb] *= alpha;
           }
-        } else { // Upper
-          // Forward substitution (U^T is Lower)
-          for (int k = 0; k < n; ++k) {
-            for (int j = 0; j < k; ++j) {
-              B[i + k * ldb] -= B[i + j * ldb] * A[k + j * lda];
+          for (k = 0; k < j; ++k) {
+            if (A[k + j * lda] != 0.0) {
+              for (i = 0; i < m; ++i) {
+                B[i + j * ldb] -= A[k + j * lda] * B[i + k * ldb];
+              }
             }
-            if (!unit)
-              B[i + k * ldb] /= A[k + k * lda];
+          }
+          if (nounit) {
+            double temp = 1.0 / A[j + j * lda];
+            for (i = 0; i < m; ++i)
+              B[i + j * ldb] *= temp;
           }
         }
-      } else { // Transposed
-        if (lower) {
-          // Forward
-          for (int k = 0; k < n; ++k) {
-            for (int j = 0; j < k; ++j) {
-              B[i + k * ldb] -= B[i + j * ldb] * A[j + k * lda];
-            }
-            if (!unit)
-              B[i + k * ldb] /= A[k + k * lda];
+      } else {
+        // UPLO = 'L'
+        for (j = n - 1; j >= 0; --j) {
+          if (alpha != 1.0) {
+            for (i = 0; i < m; ++i)
+              B[i + j * ldb] *= alpha;
           }
-        } else {
-          // Backward
-          for (int k = n - 1; k >= 0; --k) {
-            for (int j = k + 1; j < n; ++j) {
-              B[i + k * ldb] -= B[i + j * ldb] * A[j + k * lda];
+          for (k = j + 1; k < n; ++k) {
+            if (A[k + j * lda] != 0.0) {
+              for (i = 0; i < m; ++i) {
+                B[i + j * ldb] -= A[k + j * lda] * B[i + k * ldb];
+              }
             }
-            if (!unit)
-              B[i + k * ldb] /= A[k + k * lda];
+          }
+          if (nounit) {
+            double temp = 1.0 / A[j + j * lda];
+            for (i = 0; i < m; ++i)
+              B[i + j * ldb] *= temp;
+          }
+        }
+      }
+    } else {
+      // SIDE = 'R', TRANSA = 'T'
+      if (upper) {
+        // UPLO = 'U'
+        for (k = n - 1; k >= 0; --k) {
+          if (nounit) {
+            double temp = 1.0 / A[k + k * lda];
+            for (i = 0; i < m; ++i)
+              B[i + k * ldb] *= temp;
+          }
+          for (j = 0; j < k; ++j) {
+            if (A[j + k * lda] != 0.0) {
+              double temp = A[j + k * lda];
+              for (i = 0; i < m; ++i) {
+                B[i + j * ldb] -= temp * B[i + k * ldb];
+              }
+            }
+          }
+          if (alpha != 1.0) {
+            for (i = 0; i < m; ++i)
+              B[i + k * ldb] *= alpha;
+          }
+        }
+      } else {
+        // UPLO = 'L'
+        for (k = 0; k < n; ++k) {
+          if (nounit) {
+            double temp = 1.0 / A[k + k * lda];
+            for (i = 0; i < m; ++i)
+              B[i + k * ldb] *= temp;
+          }
+          for (j = k + 1; j < n; ++j) {
+            if (A[j + k * lda] != 0.0) {
+              double temp = A[j + k * lda];
+              for (i = 0; i < m; ++i) {
+                B[i + j * ldb] -= temp * B[i + k * ldb];
+              }
+            }
+          }
+          if (alpha != 1.0) {
+            for (i = 0; i < m; ++i)
+              B[i + k * ldb] *= alpha;
           }
         }
       }
@@ -137,14 +210,24 @@ void my_dtrsm(char side, char uplo, char transa, char diag, int m, int n,
               double alpha, const double *A, int lda, double *B, int ldb) {
   // Fast Path for Small Matrices
   if (m <= TRSM_BLK && n <= TRSM_BLK) {
-    dtrsm_small(side, uplo, transa, diag, m, n, alpha, A, lda, B, ldb);
+    dtrsm_ref(side, uplo, transa, diag, m, n, alpha, A, lda, B, ldb);
     return;
+  }
+
+  // Scale B by alpha upfront to avoid double-scaling in blocked updates
+  if (alpha != 1.0) {
+#pragma omp parallel for collapse(2)
+    for (int j = 0; j < n; ++j) {
+      for (int i = 0; i < m; ++i) {
+        B[i + j * ldb] *= alpha;
+      }
+    }
+    alpha = 1.0;
   }
 
   int lside = (side == 'L' || side == 'l');
   int lower = (uplo == 'L' || uplo == 'l');
-  int trans =
-      (transa == 'T' || transa == 't' || transa == 'C' || transa == 'c');
+  int trans = (transa == 'T' || transa == 't' || transa == 'C' || transa == 'c');
 
   // Determine Logic:
   int forward = 1;
@@ -180,22 +263,20 @@ void my_dtrsm(char side, char uplo, char transa, char diag, int m, int n,
         }
 
         // 1. Task: Solve Diagonal Block
-        double *dep_token = lside ? &B[k] : &B[k * ldb];
+        long dep_idx = lside ? (long)k : (long)k * ldb;
 
-#pragma omp task depend(inout : dep_token) firstprivate(k, blk_size)
+#pragma omp task depend(inout : B[dep_idx]) firstprivate(k, blk_size, alpha)
         {
-          const double *Ak;
-          double *Bk;
           if (lside) {
-            Ak = &A[k + k * lda];
-            Bk = &B[k]; // B row k
-            dtrsm_small(side, uplo, transa, diag, blk_size, n, alpha, Ak, lda,
-                        Bk, ldb);
+            const double * Ak = &A[k + k * lda];
+            double *Bk = &B[k]; // B row k
+            dtrsm_ref(side, uplo, transa, diag, blk_size, n, alpha, Ak, lda, Bk,
+                      ldb);
           } else {
-            Ak = &A[k + k * lda];
-            Bk = &B[k * ldb]; // B col k
-            dtrsm_small(side, uplo, transa, diag, m, blk_size, alpha, Ak, lda,
-                        Bk, ldb);
+            const double *Ak = &A[k + k * lda];
+            double *Bk = &B[k * ldb]; // B col k
+            dtrsm_ref(side, uplo, transa, diag, m, blk_size, alpha, Ak, lda, Bk,
+                      ldb);
           }
         }
 
@@ -204,21 +285,22 @@ void my_dtrsm(char side, char uplo, char transa, char diag, int m, int n,
           for (int i = k + blk_size; i < limit; i += TRSM_BLK) {
             int i_size = (i + TRSM_BLK > limit) ? limit - i : TRSM_BLK;
 
-            double *dep_src = lside ? &B[k] : &B[k * ldb];
-            double *dep_dst = lside ? &B[i] : &B[i * ldb];
+            long src_idx = lside ? (long)k : (long)k * ldb;
+            long dst_idx = lside ? (long)i : (long)i * ldb;
 
-#pragma omp task depend(in : dep_src) depend(inout : dep_dst)                  \
-    firstprivate(i, k, blk_size, i_size)
+#pragma omp task depend(in : B[src_idx]) depend(inout : B[dst_idx]) firstprivate(i, k, blk_size, i_size)
             {
               // GEMM Update
               if (lside) {
-                // B[i] -= A[i,k] * B[k]
-                my_dgemm('N', 'N', i_size, n, blk_size, -1.0, &A[i + k * lda],
-                         lda, &B[k], ldb, 1.0, &B[i], ldb);
+                // B[i] -= op(A[i,k]) * B[k]
+                const double *A_ptr = trans ? &A[k + i * lda] : &A[i + k * lda];
+                my_dgemm(trans ? transa : 'N', 'N', i_size, n, blk_size, -1.0,
+                         A_ptr, lda, &B[k], ldb, 1.0, &B[i], ldb);
               } else {
-                // B[i] -= B[k] * A[k,i]
-                my_dgemm('N', 'N', m, i_size, blk_size, -1.0, &B[k * ldb], ldb,
-                         &A[k + i * lda], lda, 1.0, &B[i * ldb], ldb);
+                // B[i] -= B[k] * op(A[k,i])
+                const double *A_ptr = trans ? &A[i + k * lda] : &A[k + i * lda];
+                my_dgemm('N', trans ? transa : 'N', m, i_size, blk_size, -1.0,
+                         &B[k * ldb], ldb, A_ptr, lda, 1.0, &B[i * ldb], ldb);
               }
             }
           }
@@ -227,24 +309,26 @@ void my_dtrsm(char side, char uplo, char transa, char diag, int m, int n,
           for (int temp_i = k - TRSM_BLK;; temp_i -= TRSM_BLK) {
             int i = temp_i;
             int i_size = TRSM_BLK;
-            if (i < 0) {
+            if (temp_i < 0) {
               i = 0;
-              i_size = k; // The gap from 0 to k
+              i_size = temp_i + TRSM_BLK;
             }
 
             if (i_size > 0) {
-              double *dep_src = lside ? &B[k] : &B[k * ldb];
-              double *dep_dst = lside ? &B[i] : &B[i * ldb];
+              long src_idx = lside ? (long)k : (long)k * ldb;
+              long dst_idx = lside ? (long)i : (long)i * ldb;
 
-#pragma omp task depend(in : dep_src) depend(inout : dep_dst)                  \
+#pragma omp task depend(in : B[src_idx]) depend(inout : B[dst_idx])            \
     firstprivate(i, k, blk_size, i_size)
               {
                 if (lside) {
-                  my_dgemm('N', 'N', i_size, n, blk_size, -1.0, &A[i + k * lda],
-                           lda, &B[k], ldb, 1.0, &B[i], ldb);
+                  const double *A_ptr = trans ? &A[k + i * lda] : &A[i + k * lda];
+                  my_dgemm(trans ? transa : 'N', 'N', i_size, n, blk_size, -1.0,
+                           A_ptr, lda, &B[k], ldb, 1.0, &B[i], ldb);
                 } else {
-                  my_dgemm('N', 'N', m, i_size, blk_size, -1.0, &B[k * ldb],
-                           ldb, &A[k + i * lda], lda, 1.0, &B[i * ldb], ldb);
+                  const double *A_ptr = trans ? &A[i + k * lda] : &A[k + i * lda];
+                  my_dgemm('N', trans ? transa : 'N', m, i_size, blk_size, -1.0,
+                           &B[k * ldb], ldb, A_ptr, lda, 1.0, &B[i * ldb], ldb);
                 }
               }
             }
@@ -258,8 +342,8 @@ void my_dtrsm(char side, char uplo, char transa, char diag, int m, int n,
   }
 }
 
-
-void dtrsm_(char const * side, char const * uplo, char const * transa, char const * diag, int const * m, int const * n,
-            double const * alpha, const double * restrict A, int const * lda, double * restrict B, int const * ldb) {
+void dtrsm_(char const *side, char const *uplo, char const *transa, char const *diag, int const *m, int const *n,
+            double const *alpha, const double *restrict A, int const *lda, double *restrict B, int const *ldb) {
   my_dtrsm(*side, *uplo, *transa, *diag, *m, *n, *alpha, A, *lda, B, *ldb);
+  // dtrsm_ref(*side, *uplo, *transa, *diag, *m, *n, *alpha, A, *lda, B, *ldb);
 }
