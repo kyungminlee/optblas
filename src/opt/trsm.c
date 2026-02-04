@@ -209,6 +209,21 @@ void dtrsm_ref(char side, char uplo, char transa, char diag, int m, int n,
 
 void my_dtrsm(char side, char uplo, char transa, char diag, int m, int n,
               double alpha, const double *A, int lda, double *B, int ldb) {
+  int side_dim = (side == 'L' || side == 'l') ? m : n;
+  if (side_dim == 1) {
+    double a00 = A[0];
+    if (alpha != 1.0 || a00 != 1.0) {
+      double scale = alpha / a00;
+      #pragma omp parallel for collapse(2)
+      for (int j = 0; j < n; ++j) {
+        for (int i = 0; i < m; ++i) {
+          B[i + j * ldb] *= scale;
+        }
+      }
+    }
+    return;
+  }
+
   // Fast Path for Small Matrices
   if (m <= TRSM_BLK && n <= TRSM_BLK) {
     dtrsm_ref(side, uplo, transa, diag, m, n, alpha, A, lda, B, ldb);

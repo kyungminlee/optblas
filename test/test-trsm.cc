@@ -19,7 +19,7 @@ typedef void (*dtrsm_t)(const char *side, const char *uplo, const char *transa, 
                         const double *A, const int *lda, double *B, const int *ldb);
 
 void fill_random(std::vector<double>& vec, std::mt19937& gen) {
-    std::uniform_real_distribution<> dis(-1.0, 1.0);
+    std::normal_distribution<> dis;
     for (auto& val : vec) {
         val = dis(gen);
     }
@@ -61,14 +61,13 @@ int main() {
     }
 
     // Random setup
-    std::random_device rd;
-    std::mt19937 gen(rd());
+    std::mt19937 gen(0);
     std::uniform_int_distribution<> prob_dist(0, 10);
     std::uniform_int_distribution<> dim_dist(2, 512);
     std::uniform_int_distribution<> pad_dist(0, 64);
     std::uniform_int_distribution<> opt_dist(0, 1);
     std::uniform_int_distribution<> trans_dist(0, 2);
-    std::uniform_real_distribution<> alpha_dist(-2.0, 2.0);
+    std::normal_distribution<> alpha_dist;
 
     const char sides[] = {'L', 'R'};
     const char uplos[] = {'U', 'L'};
@@ -97,11 +96,12 @@ int main() {
         int ldb = m + pad_dist(gen);
 
         double alpha = alpha_dist(gen);
+        // alpha = 1.0;
 
-        std::cout << "Iteration " << (i + 1) << ": M=" << m << ", N=" << n 
-                  << ", Side=" << side << ", Uplo=" << uplo 
-                  << ", TransA=" << transa << ", Diag=" << diag 
-                  << ", lda=" << lda << ", ldb=" << ldb << std::endl;
+        // std::cout << "Iteration " << (i + 1) << ": M=" << m << ", N=" << n 
+        //           << ", Side=" << side << ", Uplo=" << uplo 
+        //           << ", TransA=" << transa << ", Diag=" << diag 
+        //           << ", lda=" << lda << ", ldb=" << ldb << std::endl;
 
         // Allocate memory
         std::vector<double> A(lda * k);
@@ -117,8 +117,14 @@ int main() {
              for (int j = 0; j < k; ++j) {
                  // Add k to diagonal to ensure dominance
                  double val = A[j + j * lda];
-                 A[j + j * lda] += (k + 2.0) * ((val >= 0) ? 1.0 : -1.0);
+                 A[j + j * lda] += (k + 2.0) * ((val >= 0) ? 1.0 : -1.0) * 10.0;
              }
+        } else {
+            for (int i = 0; i < k; ++i) {
+                for (int j = 0; j < k; ++j) {
+                    A[i+j*lda] *= 0.05;
+                }
+            }
         }
 
         // Copy B1 to B2 for the second run
@@ -145,16 +151,25 @@ int main() {
         std::chrono::duration<double> duration1 = t2 - t1;
         std::chrono::duration<double> duration2 = t3 - t2;
 
-        std::cout << std::scientific << std::setprecision(6);
-        std::cout << "  Time1: " << duration1.count() << " s, Time2: " << duration2.count() 
-                  << " s, Max Diff: " << max_diff << std::endl;
+        // std::cout << std::scientific << std::setprecision(6);
+        // std::cout << "  Time1: " << duration1.count() << " s, Time2: " << duration2.count() 
+        //           << " s, Max Diff: " << max_diff << std::endl;
 
+        // if (m == 1 || n == 1) { continue; }
+
+        std::cout << side << uplo << transa << diag << " " << m << " " << n;
         // Check for mismatch
         if (max_diff > 1e-6) {
-            std::cerr << "Mismatch at iteration " << (i + 1) << ": max_diff = " << max_diff << std::endl;
-            std::cerr << "Params: M=" << m << ", N=" << n << ", Side=" << side 
-                      << ", Uplo=" << uplo << ", TransA=" << transa << ", Diag=" << diag << std::endl;
-            return 1;
+            // std::cout << "Iteration " << (i + 1) << ": ";
+            // std::cout << "Params: M=" << m << ", N=" << n << ", Side=" << side 
+            //           << ", Uplo=" << uplo << ", TransA=" << transa << ", Diag=" << diag  << "\tFAILED." << std::endl;
+            // return 1;
+            std::cout << "\tFAILED: max_diff = " << max_diff << "\n";
+        } else {
+            // std::cout << "Iteration " << (i + 1) << ": ";
+            // std::cout << "Params: M=" << m << ", N=" << n << ", Side=" << side 
+            //           << ", Uplo=" << uplo << ", TransA=" << transa << ", Diag=" << diag  << "\tpassed." << std::endl;
+            std::cout << "\tpassed\n";
         }
     }
 

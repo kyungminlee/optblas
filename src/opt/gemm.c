@@ -43,11 +43,11 @@ static void micro_kernel_dgemm(
         __builtin_prefetch(A + MR * (l+1));
         __builtin_prefetch(B + NR * (l+1));
 
-        for(int j = 0; j < NR; ++j) {
+        for(int j = 0; j < nr_cur; ++j) {
             // Load B element once and broadcast logically
             double b_val = B[l * NR + j]; 
 
-            for(int i = 0; i < MR; ++i) {
+            for(int i = 0; i < mr_cur; ++i) {
                 // Fused Multiply-Add
                 // A is packed in column-major order within the micropanel
                 ab[i][j] += A[l * MR + i] * b_val;
