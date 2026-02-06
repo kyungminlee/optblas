@@ -1,7 +1,7 @@
-add_library(blas SHARED dgemm.c dtrsm.c
-
-egemm.c
-qgemm.c
+add_library(blas SHARED
+  # dgemm.c egemm.c qgemm.c
+  # dtrsm.c etrsm.c qtrsm.c
+  d.c e.c q.c
 )
 target_link_libraries(blas PRIVATE OpenMP::OpenMP_C)
 # target_compile_options(gemm PRIVATE -march=native -funroll-loops -Xpreprocessor -fopenmp)

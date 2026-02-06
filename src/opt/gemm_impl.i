@@ -242,8 +242,8 @@ void gemm_n1(int m, int k, real alpha, const real *A, int rsa, int csa,
   }
 }
 
-
-void BLASNAME(gemm_opt)(char transa, char transb, int m, int n, int k, real alpha,
+static
+void gemm_opt(char transa, char transb, int m, int n, int k, real alpha,
               const real *A, int lda, const real *B, int ldb, real beta,
               real *C, int ldc) {
   // 1. Stride Setup
@@ -284,5 +284,5 @@ void BLASNAME(gemm_opt)(char transa, char transb, int m, int n, int k, real alph
 void BLASNAME(gemm)(char const * ptransa, char const * ptransb, int const * pm, int const * pn, int const * pk, real const * palpha,
               const real * restrict A, int const * plda, const real * restrict B, int const * pldb, real const * pbeta,
               real * restrict C, int const * pldc) {
-  BLASNAME(gemm_opt)(*ptransa, *ptransb, *pm, *pn, *pk, *palpha, A, *plda, B, *pldb, *pbeta, C, *pldc);
+  gemm_opt(*ptransa, *ptransb, *pm, *pn, *pk, *palpha, A, *plda, B, *pldb, *pbeta, C, *pldc);
 }

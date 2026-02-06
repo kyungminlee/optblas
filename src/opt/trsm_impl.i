@@ -16,10 +16,10 @@
 // Constants and Macros
 // -----------------------------------------------------------------------------
 
-
-void BLASNAME(gemm_opt)(char transa, char transb, int m, int n, int k, real alpha,
-              const real *A, int lda, const real *B, int ldb, real beta,
-              real *C, int ldc);
+// static
+// void gemm_opt(char transa, char transb, int m, int n, int k, real alpha,
+//               const real *A, int lda, const real *B, int ldb, real beta,
+//               real *C, int ldc);
 
 // -----------------------------------------------------------------------------
 // DTRSM Implementation
@@ -208,6 +208,7 @@ void trsm_ref(char side, char uplo, char transa, char diag, int m, int n,
   }
 }
 
+static
 void BLASNAME(trsm_opt)(char side, char uplo, char transa, char diag, int m, int n,
               real alpha, const real *A, int lda, real *B, int ldb) {
   int side_dim = (side == 'L' || side == 'l') ? m : n;
@@ -309,12 +310,12 @@ void BLASNAME(trsm_opt)(char side, char uplo, char transa, char diag, int m, int
               if (lside) {
                 // B[i] -= op(A[i,k]) * B[k]
                 const real *A_ptr = trans ? &A[k + i * lda] : &A[i + k * lda];
-                BLASNAME(gemm_opt)(trans ? transa : 'N', 'N', i_size, n, blk_size, -1.0,
+                gemm_opt(trans ? transa : 'N', 'N', i_size, n, blk_size, -1.0,
                          A_ptr, lda, &B[k], ldb, 1.0, &B[i], ldb);
               } else {
                 // B[i] -= B[k] * op(A[k,i])
                 const real *A_ptr = trans ? &A[i + k * lda] : &A[k + i * lda];
-                BLASNAME(gemm_opt)('N', trans ? transa : 'N', m, i_size, blk_size, -1.0,
+                gemm_opt('N', trans ? transa : 'N', m, i_size, blk_size, -1.0,
                          &B[k * ldb], ldb, A_ptr, lda, 1.0, &B[i * ldb], ldb);
               }
             }
@@ -337,11 +338,11 @@ void BLASNAME(trsm_opt)(char side, char uplo, char transa, char diag, int m, int
               {
                 if (lside) {
                   const real *A_ptr = trans ? &A[k + i * lda] : &A[i + k * lda];
-                  BLASNAME(gemm_opt)(transa, 'N', i_size, n, blk_size, -1.0,
+                  gemm_opt(transa, 'N', i_size, n, blk_size, -1.0,
                            A_ptr, lda, &B[k], ldb, 1.0, &B[i], ldb);
                 } else {
                   const real *A_ptr = trans ? &A[i + k * lda] : &A[k + i * lda];
-                  BLASNAME(gemm_opt)('N', transa, m, i_size, blk_size, -1.0,
+                  gemm_opt('N', transa, m, i_size, blk_size, -1.0,
                            &B[k * ldb], ldb, A_ptr, lda, 1.0, &B[i * ldb], ldb);
                 }
               }

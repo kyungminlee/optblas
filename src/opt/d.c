@@ -9,7 +9,12 @@
 #define KC 256
 #define NC 1024 // Adjusted to L3 size per thread
 
+
 typedef double real;
 #define BLASNAME(f) d##f##_
 
 #include "gemm_impl.i"
+
+#define TRSM_BLK 128
+
+#include "trsm_impl.i"
