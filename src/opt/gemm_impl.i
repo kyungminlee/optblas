@@ -2,7 +2,7 @@
 #include <stdlib.h>
 
 #ifndef BLASNAME
-#include "dgemm.c"
+#include "d.c"
 #endif
 
 /*
