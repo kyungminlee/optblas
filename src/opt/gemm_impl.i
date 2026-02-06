@@ -1,4 +1,9 @@
+#pragma once
+#include <stdlib.h>
 
+#ifndef BLASNAME
+#include "dgemm.c"
+#endif
 
 /*
  * micro_kernel_PREFIX##gemm

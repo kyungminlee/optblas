@@ -1,7 +1,3 @@
-// #include <omp.h>
-#include <stdlib.h>
-
-
 /* 
  * Micro-Kernel parameters
  * Targeted for AVX2 (Double Precision)
