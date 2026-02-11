@@ -10,10 +10,10 @@ add_subdirectory(src/refblas)
 # target_link_libraries(gemm PRIVATE OpenMP::OpenMP_C)
 # target_compile_options(gemm PRIVATE ${OpenMP_C_FLAGS})
 add_executable(test test/test.cc)
-target_link_libraries(test PRIVATE dl)
+target_link_libraries(test PRIVATE OpenMP::OpenMP_CXX dl)
 
 add_executable(test-trsm test/test-trsm.cc)
-target_link_libraries(test-trsm PRIVATE dl)
+target_link_libraries(test-trsm PRIVATE OpenMP::OpenMP_CXX dl)
 
 
 # message(STATUS "${CMAKE_Fortran_LINK_EXECUTABLE}")

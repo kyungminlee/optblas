@@ -1,3 +1,6 @@
+#include <omp.h>
+#include <quadmath.h>
+
 typedef __float128 real;
 #define BLASNAME(f) q##f##_
 

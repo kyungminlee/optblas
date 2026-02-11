@@ -1,3 +1,5 @@
+#include <omp.h>
+
 typedef double real;
 #define BLASNAME(f) d##f##_
 

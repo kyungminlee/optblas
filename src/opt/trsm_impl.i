@@ -1,206 +1,216 @@
-/*
- * trsm.c
- * High-Performance Implementation of Blocked Dense Linear Algebra Kernels
- * Generated based on gemini.md
+/**
+ * dtrsm_omp.c
+ *
+ * OpenMP 4.5 Parallelized DTRSM (Double-precision Triangular Solve with
+ * Multiple RHS)
+ *
+ * Features:
+ *  - Trivial Parallelization:
+ *      Side=L -> Parallelize over columns of B
+ *      Side=R -> Parallelize over rows of B
+ *  - Cache Blocking: Decomposes problem into DGEMM updates and small TRSM
+ * solves.
+ *  - Block Size: Tuned via TRSM_BLK macro (default 128).
  */
 
-#include <omp.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <ctype.h>
-#include <math.h>
-#include <string.h>
+#ifndef BLASNAME
+#include "d.c"
+#endif
 
 
-// -----------------------------------------------------------------------------
-// Constants and Macros
-// -----------------------------------------------------------------------------
-
-// static
-// void gemm_opt(char transa, char transb, int m, int n, int k, real alpha,
-//               const real *A, int lda, const real *B, int ldb, real beta,
-//               real *C, int ldc);
+#define MAX(x, y) (((x) > (y)) ? (x) : (y))
+#define MIN(x, y) (((x) < (y)) ? (x) : (y))
 
 // -----------------------------------------------------------------------------
-// DTRSM Implementation
+// External BLAS Prototypes
 // -----------------------------------------------------------------------------
+/*
+ * We assume a standard Fortran-compatible BLAS interface (pointers +
+ * underscores). If linking against a C-interface BLAS (like cblas), adapters
+ * would be needed.
+ */
+extern void BLASNAME(gemm)(
+  const char *transa, const char *transb, const int *m,
+  const int *n, const int *k, const real *alpha,
+  const real *a, const int *lda, const real *b,
+  const int *ldb, const real *beta, real *c,
+  const int *ldc);
 
-// Helper: Reference DTRSM implementation (converted from dtrsm.f)
-static
-void trsm_ref(char side, char uplo, char transa, char diag, int m, int n,
-               real alpha, const real *A, int lda, real *B, int ldb) {
-  int i, j, k;
-  int lside = side == 'L' || side == 'l';
-  int nounit = diag == 'N' || diag == 'n';
-  int upper = uplo == 'U' || uplo == 'u';
-  int trans = transa == 'T' || transa == 't' || transa == 'C' || transa == 'c';
+extern void xerbla_(const char *srname, const int *info, int len);
+
+// -----------------------------------------------------------------------------
+// Unblocked Scalar DTRSM (The Base Case)
+// -----------------------------------------------------------------------------
+/*
+ * Solves op(A)*X = alpha*B or X*op(A) = alpha*B for small blocks.
+ * This function does not use DGEMM; it uses nested loops.
+ */
+static void trsm_unblocked(char side, char uplo, char transa, char diag,
+                     const int m, const int n,
+                     const real alpha, const real *a, const int lda,
+                     real *b, const int ldb) {
+  // Quick return
   if (m == 0 || n == 0)
     return;
 
+  // Apply alpha scaling to B if alpha is not 1.0
   if (alpha == 0.0) {
-    for (j = 0; j < n; ++j) {
-      for (i = 0; i < m; ++i) {
-        B[i + j * ldb] = 0.0;
+    for (int j = 0; j < n; j++) {
+      for (int i = 0; i < m; i++) {
+        b[j * ldb + i] = 0.0;
       }
     }
     return;
   }
 
+  if (alpha != 1.0) {
+    for (int j = 0; j < n; j++) {
+      for (int i = 0; i < m; i++) {
+        b[j * ldb + i] *= alpha;
+      }
+    }
+  }
+
+  int lside = (side == 'L' || side == 'l');
+  int lower = (uplo == 'L' || uplo == 'l');
+  int nounit = (diag == 'N' || diag == 'n');
+  int trans = (transa == 'T' || transa == 't' || transa == 'C' || transa == 'c');
+
+  // -------------------------------------------------------------------------
+  // SIDE LEFT: op(A) * X = B
+  // -------------------------------------------------------------------------
   if (lside) {
     if (!trans) {
-      // SIDE = 'L', TRANSA = 'N'
-      if (upper) {
-        // UPLO = 'U'
-        for (j = 0; j < n; ++j) {
-          if (alpha != 1.0) {
-            for (i = 0; i < m; ++i)
-              B[i + j * ldb] *= alpha;
-          }
-          for (k = m - 1; k >= 0; --k) {
-            if (B[k + j * ldb] != 0.0) {
-              if (nounit)
-                B[k + j * ldb] /= A[k + k * lda];
-              for (i = 0; i < k; ++i) {
-                B[i + j * ldb] -= B[k + j * ldb] * A[i + k * lda];
-              }
+      // Case 1: A * X = B
+      if (lower) {
+        // Lower Triangular: Forward Substitution
+        for (int j = 0; j < n; j++) {
+          for (int k = 0; k < m; k++) {
+            if (nounit)
+              b[j * ldb + k] /= a[k * lda + k];
+            for (int i = k + 1; i < m; i++) {
+              b[j * ldb + i] -= b[j * ldb + k] * a[k * lda + i];
             }
           }
         }
       } else {
-        // UPLO = 'L'
-        for (j = 0; j < n; ++j) {
-          if (alpha != 1.0) {
-            for (i = 0; i < m; ++i)
-              B[i + j * ldb] *= alpha;
-          }
-          for (k = 0; k < m; ++k) {
-            if (B[k + j * ldb] != 0.0) {
-              if (nounit)
-                B[k + j * ldb] /= A[k + k * lda];
-              for (i = k + 1; i < m; ++i) {
-                B[i + j * ldb] -= B[k + j * ldb] * A[i + k * lda];
-              }
+        // Upper Triangular: Backward Substitution
+        for (int j = 0; j < n; j++) {
+          for (int k = m - 1; k >= 0; k--) {
+            if (nounit)
+              b[j * ldb + k] /= a[k * lda + k];
+            for (int i = 0; i < k; i++) {
+              b[j * ldb + i] -= b[j * ldb + k] * a[k * lda + i];
             }
           }
         }
       }
     } else {
-      // SIDE = 'L', TRANSA = 'T'
-      if (upper) {
-        // UPLO = 'U'
-        for (j = 0; j < n; ++j) {
-          for (i = 0; i < m; ++i) {
-            real temp = alpha * B[i + j * ldb];
-            for (k = 0; k < i; ++k) {
-              temp -= A[k + i * lda] * B[k + j * ldb];
+      // Case 2: A^T * X = B
+      if (lower) {
+        // Lower Transpose (behaves like Upper): Backward Loop
+        for (int j = 0; j < n; j++) {
+          for (int k = m - 1; k >= 0; k--) {
+            real sum = 0.0;
+            for (int i = k + 1; i < m; i++) {
+              sum += a[k * lda + i] * b[j * ldb + i];
             }
+            b[j * ldb + k] -= sum;
             if (nounit)
-              temp /= A[i + i * lda];
-            B[i + j * ldb] = temp;
+              b[j * ldb + k] /= a[k * lda + k];
           }
         }
       } else {
-        // UPLO = 'L'
-        for (j = 0; j < n; ++j) {
-          for (i = m - 1; i >= 0; --i) {
-            real temp = alpha * B[i + j * ldb];
-            for (k = i + 1; k < m; ++k) {
-              temp -= A[k + i * lda] * B[k + j * ldb];
+        // Upper Transpose (behaves like Lower): Forward Loop
+        for (int j = 0; j < n; j++) {
+          for (int k = 0; k < m; k++) {
+            real sum = 0.0;
+            for (int i = 0; i < k; i++) {
+              sum += a[k * lda + i] * b[j * ldb + i];
             }
+            b[j * ldb + k] -= sum;
             if (nounit)
-              temp /= A[i + i * lda];
-            B[i + j * ldb] = temp;
+              b[j * ldb + k] /= a[k * lda + k];
           }
         }
       }
     }
-  } else {
-    // SIDE = 'R'
+  }
+  // -------------------------------------------------------------------------
+  // SIDE RIGHT: X * op(A) = B
+  // -------------------------------------------------------------------------
+  else {
     if (!trans) {
-      // SIDE = 'R', TRANSA = 'N'
-      if (upper) {
-        // UPLO = 'U'
-        for (j = 0; j < n; ++j) {
-          if (alpha != 1.0) {
-            for (i = 0; i < m; ++i)
-              B[i + j * ldb] *= alpha;
+      // Case 3: X * A = B
+      if (lower) {
+        // Lower Triangular: Backward Loop (solve X_n, then X_{n-1}...)
+        for (int j = n - 1; j >= 0; j--) {
+          if (nounit) {
+            real invDiag = 1.0 / a[j * lda + j];
+            for (int i = 0; i < m; i++)
+              b[j * ldb + i] *= invDiag;
           }
-          for (k = 0; k < j; ++k) {
-            if (A[k + j * lda] != 0.0) {
-              for (i = 0; i < m; ++i) {
-                B[i + j * ldb] -= A[k + j * lda] * B[i + k * ldb];
+          for (int k = 0; k < j; k++) {
+            if (a[k * lda + j] != 0.0) {
+              real Akj = a[k * lda + j];
+              for (int i = 0; i < m; i++) {
+                b[k * ldb + i] -= Akj * b[j * ldb + i];
               }
             }
-          }
-          if (nounit) {
-            real temp = 1.0 / A[j + j * lda];
-            for (i = 0; i < m; ++i)
-              B[i + j * ldb] *= temp;
           }
         }
       } else {
-        // UPLO = 'L'
-        for (j = n - 1; j >= 0; --j) {
-          if (alpha != 1.0) {
-            for (i = 0; i < m; ++i)
-              B[i + j * ldb] *= alpha;
+        // Upper Triangular: Forward Loop
+        for (int j = 0; j < n; j++) {
+          if (nounit) {
+            real invDiag = 1.0 / a[j * lda + j];
+            for (int i = 0; i < m; i++)
+              b[j * ldb + i] *= invDiag;
           }
-          for (k = j + 1; k < n; ++k) {
-            if (A[k + j * lda] != 0.0) {
-              for (i = 0; i < m; ++i) {
-                B[i + j * ldb] -= A[k + j * lda] * B[i + k * ldb];
+          for (int k = j + 1; k < n; k++) {
+            if (a[k * lda + j] != 0.0) {
+              real Akj = a[k * lda + j];
+              for (int i = 0; i < m; i++) {
+                b[k * ldb + i] -= Akj * b[j * ldb + i];
               }
             }
-          }
-          if (nounit) {
-            real temp = 1.0 / A[j + j * lda];
-            for (i = 0; i < m; ++i)
-              B[i + j * ldb] *= temp;
           }
         }
       }
     } else {
-      // SIDE = 'R', TRANSA = 'T'
-      if (upper) {
-        // UPLO = 'U'
-        for (k = n - 1; k >= 0; --k) {
+      // Case 4: X * A^T = B
+      if (lower) {
+        // Lower Transpose: Forward Loop
+        for (int k = 0; k < n; k++) {
           if (nounit) {
-            real temp = 1.0 / A[k + k * lda];
-            for (i = 0; i < m; ++i)
-              B[i + k * ldb] *= temp;
+            real invDiag = 1.0 / a[k * lda + k];
+            for (int i = 0; i < m; i++)
+              b[k * ldb + i] *= invDiag;
           }
-          for (j = 0; j < k; ++j) {
-            if (A[j + k * lda] != 0.0) {
-              real temp = A[j + k * lda];
-              for (i = 0; i < m; ++i) {
-                B[i + j * ldb] -= temp * B[i + k * ldb];
+          for (int j = k + 1; j < n; j++) {
+            if (a[k * lda + j] != 0.0) {
+              real Ajk = a[k * lda + j]; // A[j,k] in C
+              for (int i = 0; i < m; i++) {
+                b[j * ldb + i] -= Ajk * b[k * ldb + i];
               }
             }
-          }
-          if (alpha != 1.0) {
-            for (i = 0; i < m; ++i)
-              B[i + k * ldb] *= alpha;
           }
         }
       } else {
-        // UPLO = 'L'
-        for (k = 0; k < n; ++k) {
+        // Upper Transpose: Backward Loop
+        for (int k = n - 1; k >= 0; k--) {
           if (nounit) {
-            real temp = 1.0 / A[k + k * lda];
-            for (i = 0; i < m; ++i)
-              B[i + k * ldb] *= temp;
+            real invDiag = 1.0 / a[k * lda + k];
+            for (int i = 0; i < m; i++)
+              b[k * ldb + i] *= invDiag;
           }
-          for (j = k + 1; j < n; ++j) {
-            if (A[j + k * lda] != 0.0) {
-              real temp = A[j + k * lda];
-              for (i = 0; i < m; ++i) {
-                B[i + j * ldb] -= temp * B[i + k * ldb];
+          for (int j = 0; j < k; j++) {
+            if (a[k * lda + j] != 0.0) {
+              real Ajk = a[k * lda + j];
+              for (int i = 0; i < m; i++) {
+                b[j * ldb + i] -= Ajk * b[k * ldb + i];
               }
             }
-          }
-          if (alpha != 1.0) {
-            for (i = 0; i < m; ++i)
-              B[i + k * ldb] *= alpha;
           }
         }
       }
@@ -208,148 +218,160 @@ void trsm_ref(char side, char uplo, char transa, char diag, int m, int n,
   }
 }
 
-static
-void BLASNAME(trsm_opt)(char side, char uplo, char transa, char diag, int m, int n,
-              real alpha, const real *A, int lda, real *B, int ldb) {
-  int side_dim = (side == 'L' || side == 'l') ? m : n;
-  if (side_dim == 1) {
-    real a00 = A[0];
-    if (alpha != 1.0 || a00 != 1.0) {
-      real scale = alpha / a00;
-      #pragma omp parallel for collapse(2)
-      for (int j = 0; j < n; ++j) {
-        for (int i = 0; i < m; ++i) {
-          B[i + j * ldb] *= scale;
-        }
-      }
-    }
-    return;
-  }
-
-  // Fast Path for Small Matrices
-  if (m <= TRSM_BLK && n <= TRSM_BLK) {
-    trsm_ref(side, uplo, transa, diag, m, n, alpha, A, lda, B, ldb);
-    return;
-  }
-
-  // Scale B by alpha upfront to avoid real-scaling in blocked updates
-  if (alpha != 1.0) {
-#pragma omp parallel for collapse(2)
-    for (int j = 0; j < n; ++j) {
-      for (int i = 0; i < m; ++i) {
-        B[i + j * ldb] *= alpha;
-      }
-    }
-    alpha = 1.0;
-  }
+// -----------------------------------------------------------------------------
+// Blocked DTRSM (Sequential Logic)
+// -----------------------------------------------------------------------------
+/*
+ * This function is called by each OpenMP thread on its assigned panel of B.
+ * It iterates through diagonal blocks of A, calls the scalar TRSM for the
+ * diagonal block, and uses DGEMM for updates.
+ */
+static void trsm_blocked(char side, char uplo, char transa, char diag,
+                    const int m, const int n,
+                   const real alpha, const real *a, const int lda,
+                   real *b, const int ldb) {
+  // Constants for DGEMM
+  real one = 1.0;
+  real neg_one = -1.0;
 
   int lside = (side == 'L' || side == 'l');
   int lower = (uplo == 'L' || uplo == 'l');
   int trans = (transa == 'T' || transa == 't' || transa == 'C' || transa == 'c');
 
-  // Determine Logic:
-  int forward = 1;
+  // -------------------------------------------------------------------------
+  // SIDE LEFT
+  // -------------------------------------------------------------------------
   if (lside) {
-    // Logical Lower is Lower && !Trans, OR Upper && Trans
-    int logical_lower = (lower && !trans) || (!lower && trans);
-    forward = logical_lower;
-  } else {
-    // Right Side Logic
-    int logical_lower = (lower && !trans) || (!lower && trans);
-    forward = !logical_lower;
+    if (!trans) {
+      // A * X = B
+      if (lower) {
+        // Left, Lower, NoTrans: Forward Blocked Loop
+        for (int k = 0; k < m; k += TRSM_BLK) {
+          int jb = MIN(TRSM_BLK, m - k);
+          trsm_unblocked('L', 'L', 'N', diag, jb, n, alpha, &a[k * lda + k],
+                          lda, &b[0 * ldb + k], ldb);
+
+          if (k + jb < m) {
+            int m_rest = m - (k + jb);
+            gemm_opt('N', 'N', m_rest, n, jb, neg_one, &a[k * lda + (k + jb)],
+                   lda, &b[0 * ldb + k], ldb, one,
+                   &b[0 * ldb + (k + jb)], ldb);
+          }
+        }
+      } else {
+        // Left, Upper, NoTrans: Backward Blocked Loop
+        for (int k = m; k > 0; k -= TRSM_BLK) {
+          int jb = MIN(TRSM_BLK, k);
+          int k_start = k - jb;
+          trsm_unblocked('L', 'U', 'N', diag, jb, n, alpha,
+                          &a[k_start * lda + k_start], lda,
+                          &b[0 * ldb + k_start], ldb);
+
+          if (k_start > 0) {
+            gemm_opt('N', 'N', k_start, n, jb, neg_one, &a[k_start * lda + 0],
+                   lda, &b[0 * ldb + k_start], ldb, one, &b[0 * ldb + 0], ldb);
+          }
+        }
+      }
+    } else {
+      // A^T * X = B
+      if (lower) {
+        // Left, Lower, Trans: Backward Loop (Behaves like Upper)
+        for (int k = m; k > 0; k -= TRSM_BLK) {
+          int jb = MIN(TRSM_BLK, k);
+          int k_start = k - jb;
+          trsm_unblocked('L', 'L', 'T', diag, jb, n, alpha,
+                          &a[k_start * lda + k_start], lda,
+                          &b[0 * ldb + k_start], ldb);
+
+          if (k_start > 0) {
+            gemm_opt('T', 'N', k_start, n, jb, neg_one, &a[0 * lda + k_start],
+                   lda, &b[0 * ldb + k_start], ldb, one,
+                   &b[0 * ldb + 0], ldb);
+          }
+        }
+      } else {
+        // Left, Upper, Trans: Forward Loop (Behaves like Lower)
+        for (int k = 0; k < m; k += TRSM_BLK) {
+          int jb = MIN(TRSM_BLK, m - k);
+          trsm_unblocked('L', 'U', 'T', diag, jb, n, alpha, &a[k * lda + k],
+                          lda, &b[0 * ldb + k], ldb);
+
+          if (k + jb < m) {
+            int m_rest = m - (k + jb);
+            gemm_opt('T', 'N', m_rest, n, jb, neg_one, &a[(k + jb) * lda + k],
+                   lda, &b[0 * ldb + k], ldb, one,
+                   &b[0 * ldb + (k + jb)], ldb);
+          }
+        }
+      }
+    }
   }
+  // -------------------------------------------------------------------------
+  // SIDE RIGHT
+  // -------------------------------------------------------------------------
+  else {
+    if (!trans) {
+      // X * A = B
+      if (lower) {
+        // Right, Lower, NoTrans: Backward Loop
+        for (int k = n; k > 0; k -= TRSM_BLK) {
+          int jb = MIN(TRSM_BLK, k);
+          int k_start = k - jb;
+          trsm_unblocked('R', 'L', 'N', diag, m, jb, alpha,
+                          &a[k_start * lda + k_start], lda,
+                          &b[k_start * ldb + 0], ldb);
 
-#pragma omp parallel
-  {
-#pragma omp single
-    {
-      // Main Block Loop
-      int limit = lside ? m : n;
-
-      for (int k_idx = 0; k_idx < limit; k_idx += TRSM_BLK) {
-        // Calculate actual k based on direction
-        int k, blk_size;
-        if (forward) {
-          k = k_idx;
-          blk_size = (k + TRSM_BLK > limit) ? limit - k : TRSM_BLK;
-        } else {
-          int block_idx = (k_idx / TRSM_BLK);
-          int num_blocks = (limit + TRSM_BLK - 1) / TRSM_BLK;
-          int current_block = num_blocks - 1 - block_idx;
-          k = current_block * TRSM_BLK;
-          blk_size = (k + TRSM_BLK > limit) ? limit - k : TRSM_BLK;
-        }
-
-        // 1. Task: Solve Diagonal Block
-        long dep_idx = lside ? (long)k : (long)k * ldb;
-
-#pragma omp task depend(inout : B[dep_idx]) firstprivate(k, blk_size, alpha)
-        {
-          if (lside) {
-            const real * Ak = &A[k + k * lda];
-            real *Bk = &B[k]; // B row k
-            trsm_ref(side, uplo, transa, diag, blk_size, n, alpha, Ak, lda, Bk, ldb);
-          } else {
-            const real *Ak = &A[k + k * lda];
-            real *Bk = &B[k * ldb]; // B col k
-            trsm_ref(side, uplo, transa, diag, m, blk_size, alpha, Ak, lda, Bk, ldb);
+          if (k_start > 0) {
+            gemm_opt('N', 'N', m, k_start, jb, neg_one, &b[k_start * ldb + 0],
+                   ldb, &a[0 * lda + k_start], lda, one,
+                   &b[0 * ldb + 0], ldb);
           }
         }
+      } else {
+        // Right, Upper, NoTrans: Forward Loop
+        for (int k = 0; k < n; k += TRSM_BLK) {
+          int jb = MIN(TRSM_BLK, n - k);
+          trsm_unblocked('R', 'U', 'N', diag, m, jb, alpha, &a[k * lda + k],
+                          lda, &b[k * ldb + 0], ldb);
 
-        // 2. Task: Update Off-Diagonal
-        if (forward) {
-          for (int i = k + blk_size; i < limit; i += TRSM_BLK) {
-            int i_size = (i + TRSM_BLK > limit) ? limit - i : TRSM_BLK;
-
-            long src_idx = lside ? (long)k : (long)k * ldb;
-            long dst_idx = lside ? (long)i : (long)i * ldb;
-
-#pragma omp task depend(in : B[src_idx]) depend(inout : B[dst_idx]) firstprivate(i, k, blk_size, i_size)
-            {
-              // GEMM Update
-              if (lside) {
-                // B[i] -= op(A[i,k]) * B[k]
-                const real *A_ptr = trans ? &A[k + i * lda] : &A[i + k * lda];
-                gemm_opt(trans ? transa : 'N', 'N', i_size, n, blk_size, -1.0,
-                         A_ptr, lda, &B[k], ldb, 1.0, &B[i], ldb);
-              } else {
-                // B[i] -= B[k] * op(A[k,i])
-                const real *A_ptr = trans ? &A[i + k * lda] : &A[k + i * lda];
-                gemm_opt('N', trans ? transa : 'N', m, i_size, blk_size, -1.0,
-                         &B[k * ldb], ldb, A_ptr, lda, 1.0, &B[i * ldb], ldb);
-              }
-            }
+          if (k + jb < n) {
+            int n_rest = n - (k + jb);
+            gemm_opt('N', 'N', m, n_rest, jb, neg_one, &b[k * ldb + 0], ldb,
+                   &a[(k + jb) * lda + k], lda, one,
+                   &b[(k + jb) * ldb + 0], ldb);
           }
-        } else {
-          // Backward Loop
-          for (int temp_i = k - TRSM_BLK;; temp_i -= TRSM_BLK) {
-            int i = temp_i;
-            int i_size = TRSM_BLK;
-            if (temp_i < 0) {
-              i = 0;
-              i_size = temp_i + TRSM_BLK;
-            }
+        }
+      }
+    } else {
+      // X * A^T = B
+      if (lower) {
+        // Right, Lower, Trans: Forward Loop
+        for (int k = 0; k < n; k += TRSM_BLK) {
+          int jb = MIN(TRSM_BLK, n - k);
+          trsm_unblocked('R', 'L', 'T', diag, m, jb, alpha, &a[k * lda + k],
+                          lda, &b[k * ldb + 0], ldb);
 
-            if (i_size > 0) {
-              long src_idx = lside ? (long)k : (long)k * ldb;
-              long dst_idx = lside ? (long)i : (long)i * ldb;
+          if (k + jb < n) {
+            int n_rest = n - (k + jb);
+            gemm_opt('N', 'T', m, n_rest, jb, neg_one, &b[k * ldb + 0],
+                   ldb, &a[k * lda + (k + jb)], lda, one,
+                   &b[(k + jb) * ldb + 0], ldb);
+          }
+        }
+      } else {
+        // Right, Upper, Trans: Backward Loop
+        for (int k = n; k > 0; k -= TRSM_BLK) {
+          int jb = MIN(TRSM_BLK, k);
+          int k_start = k - jb;
+          trsm_unblocked('R', 'U', 'T', diag, m, jb, alpha,
+                          &a[k_start * lda + k_start], lda,
+                          &b[k_start * ldb + 0], ldb);
 
-#pragma omp task depend(in : B[src_idx]) depend(inout : B[dst_idx]) firstprivate(i, k, blk_size, i_size)
-              {
-                if (lside) {
-                  const real *A_ptr = trans ? &A[k + i * lda] : &A[i + k * lda];
-                  gemm_opt(transa, 'N', i_size, n, blk_size, -1.0,
-                           A_ptr, lda, &B[k], ldb, 1.0, &B[i], ldb);
-                } else {
-                  const real *A_ptr = trans ? &A[i + k * lda] : &A[k + i * lda];
-                  gemm_opt('N', transa, m, i_size, blk_size, -1.0,
-                           &B[k * ldb], ldb, A_ptr, lda, 1.0, &B[i * ldb], ldb);
-                }
-              }
-            }
-
-            if (i == 0)
-              break;
+          if (k_start > 0) {
+            gemm_opt('N', 'T', m, k_start, jb, neg_one,
+                   &b[k_start * ldb + 0], ldb, &a[k_start * lda + 0], lda,
+                   one, &b[0 * ldb + 0], ldb);
           }
         }
       }
@@ -357,11 +379,122 @@ void BLASNAME(trsm_opt)(char side, char uplo, char transa, char diag, int m, int
   }
 }
 
+// -----------------------------------------------------------------------------
+// Parallel Driver (The Entry Point)
+// -----------------------------------------------------------------------------
+void BLASNAME(trsm)(const char *side, const char *uplo, const char *transa,
+           const char *diag, const int *m, const int *n, const real *alpha,
+           const real *a, const int *lda, real *b, const int *ldb) {
+  // 1. Input Validation
+  int info = 0;
+  char s = *side;
+  char u = *uplo;
+  char t = *transa;
+  char d = *diag;
 
+  int lside = (s == 'L' || s == 'l');
+  int nrowa = lside ? *m : *n;
 
+  if (!lside &&!(*side == 'R' || *side == 'r'))
+    info = 1;
+  else if (!(*uplo == 'U' || *uplo == 'u') && !(*uplo == 'L' || *uplo == 'l'))
+    info = 2;
+  else if (!(*transa == 'N' || *transa == 'n') && !(*transa == 'T' || *transa == 't') &&
+           !(*transa == 'C' || *transa == 'c'))
+    info = 3;
+  else if (!(*diag == 'U' || *diag == 'u') && !(*diag == 'N' || *diag == 'n'))
+    info = 4;
+  else if (*m < 0)
+    info = 5;
+  else if (*n < 0)
+    info = 6;
+  else if (*lda < MAX(1, nrowa))
+    info = 9;
+  else if (*ldb < MAX(1, *m))
+    info = 11;
 
-void BLASNAME(trsm)(char const *side, char const *uplo, char const *transa, char const *diag, int const *m, int const *n,
-            real const *alpha, const real *restrict A, int const *lda, real *restrict B, int const *ldb) {
-  BLASNAME(trsm_opt)(*side, *uplo, *transa, *diag, *m, *n, *alpha, A, *lda, B, *ldb);
-  // dtrsm_ref(*side, *uplo, *transa, *diag, *m, *n, *alpha, A, *lda, B, *ldb);
+  if (info != 0) {
+    xerbla_("DTRSM ", &info, 5);
+    return;
+  }
+
+  // Quick return
+  if (*m == 0 || *n == 0)
+    return;
+
+  // 2. Alpha Scaling
+  if (*alpha == 0.0) {
+#pragma omp parallel for schedule(static)
+    for (int j = 0; j < *n; j++) {
+      for (int i = 0; i < *m; i++) {
+        b[j * (*ldb) + i] = 0.0;
+      }
+    }
+    return;
+  }
+
+  if (*alpha != 1.0) {
+#pragma omp parallel for schedule(static)
+    for (int j = 0; j < *n; j++) {
+      for (int i = 0; i < *m; i++) {
+        b[j * (*ldb) + i] *= (*alpha);
+      }
+    }
+  }
+
+  // Use 1.0 for the internal algorithms since B is pre-scaled
+  real internal_alpha = 1.0;
+
+  int nthread = omp_get_max_threads();
+  // 3. Trivial Parallelization Strategy
+  if (lside) {
+// ---------------------------------------------------------
+// SIDE LEFT: op(A) * X = B
+// Parallelize over COLUMNS of B (index j).
+// ---------------------------------------------------------
+
+    int block_size = (*n + nthread - 1) / nthread;
+
+#pragma omp parallel for schedule(static)
+    for (int ithread = 0; ithread < nthread; ++ithread) {
+      int j = ithread * block_size;
+      if (j >= *n) continue;
+      int jend = MIN((ithread + 1) * block_size, *n);
+      int jb = jend - j;
+
+      real *b_panel = &b[j * (*ldb)];
+
+      trsm_blocked(s, u, t, d, *m, jb, internal_alpha, a, *lda,
+                    b_panel, *ldb);
+    }
+  } else {
+    int block_size = (*m + nthread - 1) / nthread;
+
+// ---------------------------------------------------------
+// SIDE RIGHT: X * op(A) = B
+// Parallelize over ROWS of B (index i).
+// ---------------------------------------------------------
+#pragma omp parallel for schedule(static)
+    for (int ithread = 0; ithread < nthread; ++ithread) {
+      int i = ithread * block_size;
+      if (i >= *m) continue;
+      int iend = MIN((ithread+1)*block_size, *m);
+      int ib = iend - i;
+      real *b_panel = &b[i];
+
+      trsm_blocked(s, u, t, d, ib, *n, internal_alpha, a, *lda,
+                    b_panel, *ldb);
+    }
+  }
 }
+
+
+// void BLASNAME(trsm)(char const *side, char const *uplo, char const *transa, char const *diag, int const *m, int const *n,
+//             real const *alpha, const real *restrict A, int const *lda, real *restrict B, int const *ldb) {
+//   BLASNAME(trsm_opt)(*side, *uplo, *transa, *diag, *m, *n, *alpha, A, *lda, B, *ldb);
+//   // dtrsm_ref(*side, *uplo, *transa, *diag, *m, *n, *alpha, A, *lda, B, *ldb);
+// }
+
+
+
+

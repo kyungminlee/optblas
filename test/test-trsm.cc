@@ -63,7 +63,7 @@ int main() {
     // Random setup
     std::mt19937 gen(0);
     std::uniform_int_distribution<> prob_dist(0, 10);
-    std::uniform_int_distribution<> dim_dist(2, 512);
+    std::uniform_int_distribution<> dim_dist(2, 2048);
     std::uniform_int_distribution<> pad_dist(0, 64);
     std::uniform_int_distribution<> opt_dist(0, 1);
     std::uniform_int_distribution<> trans_dist(0, 2);
@@ -151,9 +151,9 @@ int main() {
         std::chrono::duration<double> duration1 = t2 - t1;
         std::chrono::duration<double> duration2 = t3 - t2;
 
-        // std::cout << std::scientific << std::setprecision(6);
-        // std::cout << "  Time1: " << duration1.count() << " s, Time2: " << duration2.count() 
-        //           << " s, Max Diff: " << max_diff << std::endl;
+        std::cout << std::scientific << std::setprecision(6);
+        std::cout << "  Time1: " << duration1.count() << " s, Time2: " << duration2.count() 
+                  << " s, Max Diff: " << max_diff << std::endl;
 
         // if (m == 1 || n == 1) { continue; }
 
