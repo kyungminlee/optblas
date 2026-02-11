@@ -16,5 +16,8 @@ add_executable(test-trsm test/test-trsm.cc)
 target_link_libraries(test-trsm PRIVATE OpenMP::OpenMP_CXX dl)
 
 
+add_executable(bench-trsm test/bench-trsm.cc)
+target_link_libraries(bench-trsm PRIVATE OpenMP::OpenMP_CXX dl)
+
 # message(STATUS "${CMAKE_Fortran_LINK_EXECUTABLE}")
 # message(STATUS "${CMAKE_Fortran_COMPILER_LINKER}")

@@ -38,6 +38,9 @@ extern void BLASNAME(gemm)(
 
 extern void xerbla_(const char *srname, const int *info, int len);
 
+static const real one = 1.0;
+static const real neg_one = -1.0;
+
 // -----------------------------------------------------------------------------
 // Unblocked Scalar DTRSM (The Base Case)
 // -----------------------------------------------------------------------------
@@ -45,10 +48,13 @@ extern void xerbla_(const char *srname, const int *info, int len);
  * Solves op(A)*X = alpha*B or X*op(A) = alpha*B for small blocks.
  * This function does not use DGEMM; it uses nested loops.
  */
-static void trsm_unblocked(char side, char uplo, char transa, char diag,
-                     const int m, const int n,
-                     const real alpha, const real *a, const int lda,
-                     real *b, const int ldb) {
+static void trsm_unblocked(
+    char side, char uplo, char transa, char diag,
+    const int m, const int n,
+    const real alpha,
+    const real *a, const int lda,
+    real *b, const int ldb
+) {
   // Quick return
   if (m == 0 || n == 0)
     return;
@@ -226,13 +232,14 @@ static void trsm_unblocked(char side, char uplo, char transa, char diag,
  * It iterates through diagonal blocks of A, calls the scalar TRSM for the
  * diagonal block, and uses DGEMM for updates.
  */
-static void trsm_blocked(char side, char uplo, char transa, char diag,
-                    const int m, const int n,
-                   const real alpha, const real *a, const int lda,
-                   real *b, const int ldb) {
+static void trsm_blocked(
+    char side, char uplo, char transa, char diag,
+    const int m, const int n,
+    const real alpha,
+    const real *a, const int lda,
+    real *b, const int ldb
+) {
   // Constants for DGEMM
-  real one = 1.0;
-  real neg_one = -1.0;
 
   int lside = (side == 'L' || side == 'l');
   int lower = (uplo == 'L' || uplo == 'l');
@@ -482,8 +489,7 @@ void BLASNAME(trsm)(const char *side, const char *uplo, const char *transa,
       int ib = iend - i;
       real *b_panel = &b[i];
 
-      trsm_blocked(s, u, t, d, ib, *n, internal_alpha, a, *lda,
-                    b_panel, *ldb);
+      trsm_blocked(s, u, t, d, ib, *n, internal_alpha, a, *lda, b_panel, *ldb);
     }
   }
 }
