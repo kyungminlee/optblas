@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.27)
 project(gemm LANGUAGES C CXX Fortran)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 find_package(OpenMP REQUIRED)
 
@@ -16,7 +17,6 @@ target_link_libraries(test PRIVATE OpenMP::OpenMP_CXX dl)
 add_executable(test-trsm test/test-trsm.cc)
 target_link_libraries(test-trsm PRIVATE OpenMP::OpenMP_CXX dl)
 
-
 add_executable(bench-trsm test/bench-trsm.cc)
 target_link_libraries(bench-trsm PRIVATE OpenMP::OpenMP_CXX dl)
 
@@ -31,7 +31,7 @@ target_link_libraries(bench-trsm PRIVATE OpenMP::OpenMP_CXX dl)
 
 add_library(ddgemmavx2 src/opt2/gemm2.cc)
 target_include_directories(ddgemmavx2 PUBLIC src/opt)
-target_compile_options(ddgemmavx2 PRIVATE -fopenmp -march=haswell -fno-math-errno)
+target_compile_options(ddgemmavx2 PRIVATE ${OpenMP_CXX_FLAGS} -march=haswell -fno-math-errno)
 # target_link_libraries(bench-gemm2 /opt/intel/oneapi/compiler/latest/lib/libiomp5.so)
 
 add_executable(test-gemm test/test-gemm.cc)
