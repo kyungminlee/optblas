@@ -228,9 +228,6 @@ static
 void gemm_n1(int m, int k, real alpha, const real *A, int rsa, int csa,
               const real *B, int rsb, // csb irrelevant as N=1
               real beta, real *C) {
-#ifdef __cplusplus
-#pragma omp declare reduction(+ : Float64x2 : omp_out += omp_in) initializer(omp_priv=real(0.0))
-#endif
 
   for (int i = 0; i < m; ++i) {
     real sum = 0.0;

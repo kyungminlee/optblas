@@ -1,7 +1,7 @@
 #include <omp.h>
 #include "Float64x2.hh"
 
-typedef Float64x2 real;
+typedef float64x2 real;
 #define BLASNAME(f) dd##f##_
 
 #define MR 4

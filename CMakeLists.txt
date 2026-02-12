@@ -24,11 +24,22 @@ target_link_libraries(bench-trsm PRIVATE OpenMP::OpenMP_CXX dl)
 # message(STATUS "${CMAKE_Fortran_COMPILER_LINKER}")
 
 
-add_executable(bench-gemm2 src/opt2/gemm2.cc)
-target_compile_options(bench-gemm2 PRIVATE -fopenmp -march=haswell -fno-math-errno)
-target_link_libraries(bench-gemm2 PRIVATE /opt/intel/oneapi/compiler/latest/lib/libiomp5.so)
+# add_executable(bench-gemm2 src/opt2/gemm2.cc)
+# target_compile_options(bench-gemm2 PRIVATE -fopenmp -march=haswell -fno-math-errno)
+# target_link_libraries(bench-gemm2 PRIVATE /opt/intel/oneapi/compiler/latest/lib/libiomp5.so)
+
+
+add_library(ddgemmavx2 src/opt2/gemm2.cc)
+target_include_directories(ddgemmavx2 PUBLIC src/opt)
+target_compile_options(ddgemmavx2 PRIVATE -fopenmp -march=haswell -fno-math-errno)
+# target_link_libraries(bench-gemm2 /opt/intel/oneapi/compiler/latest/lib/libiomp5.so)
+
+add_executable(test-gemm test/test-gemm.cc)
+target_link_libraries(test-gemm PRIVATE ddgemmavx2)
+target_link_libraries(test-gemm PRIVATE /opt/intel/oneapi/compiler/latest/lib/libiomp5.so)
 
 add_executable(bench-gemm3 test/bench-gemm3.cc)
 target_compile_options(bench-gemm3 PRIVATE -fopenmp -march=haswell -fno-math-errno)
 target_link_libraries(bench-gemm3 PRIVATE blas)
 target_link_libraries(bench-gemm3 PRIVATE /opt/intel/oneapi/compiler/latest/lib/libiomp5.so)
+
