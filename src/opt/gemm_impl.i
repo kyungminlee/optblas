@@ -16,9 +16,9 @@
 static void micro_kernel_gemm(
     int k, 
     real alpha, 
-    const real * restrict A, 
-    const real * restrict B, 
-    real * restrict C, 
+    const real * RESTRICT A, 
+    const real * RESTRICT B, 
+    real * RESTRICT C, 
     int ldc,
     int mr_cur,
     int nr_cur)
@@ -161,8 +161,8 @@ void gemm_blocked_driver(int m, int n, int k, real alpha, const real *A,
 #pragma omp parallel
   {
     // Thread-private packing buffers
-    real *bufA = aligned_alloc(64, MC * KC * sizeof(real));
-    real *bufB = aligned_alloc(64, KC * NC * sizeof(real));
+    real *bufA = (real*) aligned_alloc(64, MC * KC * sizeof(real));
+    real *bufB = (real*) aligned_alloc(64, KC * NC * sizeof(real));
 
 #pragma omp for schedule(dynamic)
     for (int jc = 0; jc < n; jc += NC) {
@@ -228,6 +228,10 @@ static
 void gemm_n1(int m, int k, real alpha, const real *A, int rsa, int csa,
               const real *B, int rsb, // csb irrelevant as N=1
               real beta, real *C) {
+#ifdef __cplusplus
+#pragma omp declare reduction(+ : Float64x2 : omp_out += omp_in) initializer(omp_priv=real(0.0))
+#endif
+
   for (int i = 0; i < m; ++i) {
     real sum = 0.0;
 // Vectorize this loop
@@ -281,8 +285,12 @@ void gemm_opt(char transa, char transb, int m, int n, int k, real alpha,
   gemm_blocked_driver(m, n, k, alpha, A, rsa, csa, B, rsb, csb, beta, C, ldc);
 }
 
+
+#ifdef __cplusplus
+extern "C"
+#endif
 void BLASNAME(gemm)(char const * ptransa, char const * ptransb, int const * pm, int const * pn, int const * pk, real const * palpha,
-              const real * restrict A, int const * plda, const real * restrict B, int const * pldb, real const * pbeta,
-              real * restrict C, int const * pldc) {
+              const real * RESTRICT A, int const * plda, const real * RESTRICT B, int const * pldb, real const * pbeta,
+              real * RESTRICT C, int const * pldc) {
   gemm_opt(*ptransa, *ptransb, *pm, *pn, *pk, *palpha, A, *plda, B, *pldb, *pbeta, C, *pldc);
 }

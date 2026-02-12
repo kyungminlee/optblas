@@ -10,6 +10,8 @@ typedef double real;
 #define KC 256
 #define NC 1024 // Adjusted to L3 size per thread
 
+#define RESTRICT restrict
+
 #include "gemm_impl.i"
 
 #define TRSM_BLK 128

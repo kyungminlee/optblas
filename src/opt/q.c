@@ -11,6 +11,8 @@ typedef __float128 real;
 #define KC 128
 #define NC 512 // Adjusted to L3 size per thread
 
+#define RESTRICT restrict
+
 #include "gemm_impl.i"
 
 #define TRSM_BLK 64
