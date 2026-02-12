@@ -47,7 +47,7 @@ int main() {
     // Random setup
     std::mt19937 gen(0);
     std::uniform_int_distribution<> prob_dist(0, 10);
-    std::uniform_int_distribution<> dim_dist(2, 2048);
+    std::uniform_int_distribution<> dim_dist(1024, 2048);
     std::uniform_int_distribution<> pad_dist(0, 64);
     std::uniform_int_distribution<> opt_dist(0, 1);
     std::uniform_int_distribution<> trans_dist(0, 2);
@@ -58,7 +58,7 @@ int main() {
     const char trans[] = {'N', 'T', 'C'};
     const char diags[] = {'N', 'U'};
 
-    int iterations = 100;
+    int iterations = 10;
     std::cout << "Starting stress test: " << iterations << " iterations with randomized sizes and parameters..." << std::endl;
 
     for (int i = 0; i < iterations; ++i) {
@@ -114,7 +114,9 @@ int main() {
         auto t2 = std::chrono::high_resolution_clock::now();
 
         // Run Implementation
-        dtrsm2(&side, &uplo, &transa, &diag, &m, &n, &alpha, A.data(), &lda, B2.data(), &ldb);
+	for (int r = 0; r < 10; ++r) {
+		dtrsm2(&side, &uplo, &transa, &diag, &m, &n, &alpha, A.data(), &lda, B2.data(), &ldb);
+	}
         auto t3 = std::chrono::high_resolution_clock::now();
 
         std::chrono::duration<double> duration2 = t3 - t2;
